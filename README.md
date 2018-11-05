@@ -1,5 +1,6 @@
 # manual_three_way_handshaking
 A simple implementation of three way handshaking manually.
+Modified from Syn Flooder by Zakath.
 Test OS: Ubuntu 16.04
 Still WIP.
 
