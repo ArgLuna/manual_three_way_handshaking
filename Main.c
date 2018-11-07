@@ -19,9 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-//#include <sys/socket.h>
-//#include <netinet/in.h>
+#include <sys/socket.h>
+#include <linux/if_ether.h>
+#include <linux/if_packet.h>
+#include <net/ethernet.h>
+#include <linux/in.h>
 #include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 #define SEQ 0x28374839
 #define BUF_SIZE 1024
@@ -120,6 +125,8 @@ void send_tcp_segment(struct iphdr *ih, struct tcphdr *th, char *data, int dlen)
     if(sendto(ssock, buf, 4*ih->ihl + sizeof(*th)+ dlen, 0,
               &sin, sizeof(sin))<0)
     {
+		printf("ssock = %p\n", ssock);
+		printf("buf = %p\n", buf);
         printf("Error sending syn packet.\n");
         perror("");
         exit(-1);
@@ -214,9 +221,27 @@ int main(int argc, char **argv)
     sd_info *send_info = (sd_info *)malloc(sizeof(sd_info));
     unsigned long des_ip, src_ip;
     unsigned long src_port, des_port;
-    struct sockaddr_in sockstr;
-    socklen_t socklen;
-    char buf[BUF_SIZE];
+    char *buf = (char *)malloc(BUF_SIZE);
+	struct ifreq ifr;
+	char *device = "ens33";
+	struct sockaddr_ll sll;
+
+	memset(&sll, 0, sizeof(struct sockaddr_ll));
+	memset(&ifr, 0, sizeof(struct ifreq));
+
+	ssock = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IP));
+	if(ssock<0)
+	{
+		perror("socket (raw)");
+		return -1;
+	}
+
+	strncpy((char *)ifr.ifr_name, device, IFNAMSIZ);
+	if(ioctl(ssock, SIOCGIFINDEX, (char *) &ifr))
+	{
+		perror("ioctl");
+		return -1;
+	}
 
     src_ip=getaddr("192.168.168.248");
     des_ip=getaddr("192.168.168.69");
@@ -224,24 +249,12 @@ int main(int argc, char **argv)
     des_port=atoi("80");
     srcport = src_port;
 
-    ssock=socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-    if(ssock<0)
-    {
-        perror("socket (raw)");
-        exit(-1);
-    }
-    sock=socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
-    if(sock<0)
-    {
-        perror("socket");
-        exit(-1);
-    }
+//    ssock=socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
     
-	sockstr.sin_family = AF_INET;
-    sockstr.sin_port = src_port;
-	sockstr.sin_addr.s_addr = src_ip;
-	socklen = (socklen_t) sizeof(sockstr);
-    if(bind(ssock, (struct sockaddr*) &sockstr, socklen) == -1)
+	sll.sll_family = AF_PACKET;
+	sll.sll_ifindex = ifr.ifr_ifindex;
+	sll.sll_protocol = htons(ETH_P_IP);
+    if(bind(ssock, (struct sockaddr*) &sll, sizeof(sll)) == -1)
     {
         perror("bind");
         exit(-1);
@@ -265,5 +278,7 @@ int main(int argc, char **argv)
 
     free(send_info);
     send_info = 0;
+	free(buf);
+	buf = 0;
     return 0;
 }
