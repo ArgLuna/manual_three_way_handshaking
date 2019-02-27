@@ -1,13 +1,3 @@
-/* Syn Flooder by Zakath
- * TCP Functions by trurl_ (thanks man).
- * All other code by Zakath.
- * Not too cosemtic right now, just finished beta version. No docs on
- * how to use - figure it out yourself. Change the usleep() below depending
- * on your bandwidth / desired effect.
- *
- * [3.22.96]
- */
-
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/types.h>
@@ -26,12 +16,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#define SEQ 0x28374839
-
+int SEQ = 0;
 unsigned long send_seq, ack_seq, srcport;
-char flood = 0;
+unsigned long srcport;
 int rsock, ssock;
+int *seq_num = 0;
 int *ack_num = 0;
 
 /* Check Sum */
@@ -212,10 +203,7 @@ unsigned long spoof_data(unsigned long my_ip, unsigned long their_ip, unsigned s
     struct tcphdr th;
     char buf[1024];
     struct timeval tv;
-//    char *data = "GET / HTTP/1.1\r\nHost: 192.168.168.69\r\nUser-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:62.0) Gecko/20100101 Firefox/62.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.5\r\nAccept-Encoding: gzip, deflate\r\nConnection: keep-alive\r\nUpgrade-Insecure-Requests: 1\r\nIf-Modified-Since: Fri, 31 Aug 2018 09:06:39 GMT\r\nCache-Control: max-age=0\r\n";
-//	char *opt_data = "\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00GET / HTTP/1.1\r\nHost: 192.168.168.69\r\nUser-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:62.0) Gecko/20100101 Firefox/62.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.5\r\nAccept-Encoding: gzip, deflate\r\nConnection: keep-alive\r\nUpgrade-Insecure-Requests: 1\r\nIf-Modified-Since: Fri, 31 Aug 2018 09:06:39 GMT\r\nCache-Control: max-age=0\r\n";
-	char *data = "GET / HTTP/1.1\r\n";
-	char *opt_data = "\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00GET / HTTP/1.1\r\n";
+	char *data = "GET http://detectportal.firefox.com/success.txt HTTP/1.1\r\nHost: 192.168.168.232\r\n\r\n";
     ih.version=4;
     ih.ihl=5;
     ih.tos=0;           /* XXX is this normal? */
@@ -253,6 +241,76 @@ unsigned long spoof_data(unsigned long my_ip, unsigned long their_ip, unsigned s
     send_seq = SEQ+1+strlen(buf);
 }
 
+unsigned long spoof_nack(unsigned long my_ip, unsigned long their_ip, unsigned short port)
+{
+    struct iphdr ih;
+    struct tcphdr th;
+    char buf[1024];
+    struct timeval tv;
+    char *data = "";
+
+    ih.version=4;
+    ih.ihl=5;
+    ih.tos=0;           /* XXX is this normal? */
+    ih.tot_len=sizeof(ih)+sizeof(th);
+    ih.id=htons(random());
+    ih.frag_off=0;
+    ih.ttl=30;
+    ih.protocol=IPPROTO_TCP;
+    ih.check=0;
+    ih.saddr=my_ip;
+    ih.daddr=their_ip;
+
+    th.source=htons(srcport);
+    th.dest=htons(port);
+    th.seq=htonl(SEQ + 1);
+    th.doff=sizeof(th)/4;
+    th.ack_seq=(*ack_num);
+    th.res1=0;
+    th.fin=0;
+    th.syn=0;
+    th.rst=0;
+    th.psh=0;
+    th.ack=1;
+    th.urg=0;
+//    th.res2=0;
+	th.window=htons(65535);
+	th.check=0;
+	th.urg_ptr=0;
+
+	send_tcp_segment(&ih, &th, data, strlen(data));
+
+	send_seq = SEQ+1+strlen(buf);
+}
+
+unsigned long getLocalIP(char *ifname)
+{
+    int sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    struct ifreq ifr;
+    unsigned long tmp;
+
+    if (strlen(ifname) < IFNAMSIZ)
+    {
+        strcpy(ifr.ifr_name, ifname);
+        if (ioctl(sock, SIOCGIFADDR, &ifr) < 0)
+        {
+            perror("ioctl");
+            exit(-1);
+        }
+    }
+    else
+    {
+        perror("invalid ifname");
+        exit(-1);
+    }
+    memcpy(&tmp, &(ifr.ifr_addr), sizeof(tmp));
+    tmp >>= 32;
+
+    close(sock);
+    sock = 0;
+    return tmp;
+}
+
 int main(int argc, char **argv)
 {
     int i;
@@ -261,17 +319,23 @@ int main(int argc, char **argv)
     char buf[1024];
 	char vbuf[0x800];
 	ssize_t msg_len = 0;
-	const char *opt = "ens33";
+	const char *ifname = "ens33";
 	char tmp[4];
+	system("iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP -s 192.168.168.232 -d 192.168.168.69");
+	system("iptables -L");
 	socklen_t socklen = 0;
-    src_ip=getaddr("192.168.168.232");
+    src_ip = getLocalIP(ifname);
     des_ip=getaddr("192.168.168.69");
-    src_port=atoi("65530");
-    des_port=atoi("80");
+//	des_ip=getaddr("140.115.59.5");
+    src_port=atoi("80");
+    des_port=atoi("3128");
 	setvbuf(stdin, vbuf, _IONBF, 0);
 	setvbuf(stdout, vbuf, _IONBF, 0);
 	setvbuf(stderr, vbuf, _IONBF, 0);
 	srcport = src_port;
+	srand(time(NULL));
+	SEQ = rand();
+	printf("init seq num = 0x%08x\n", SEQ);
 
 
     ssock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
@@ -287,13 +351,7 @@ int main(int argc, char **argv)
         perror("rsocket (raw)");
         exit(1);
     }
-/*
-	const int off = 0;
-	if(setsockopt(ssock, IPPROTO_RAW, IP_HDRINCL, &off, sizeof(off) < 0))
-	{
-		perror("setsockopt error!\n");
-	}
-*/
+
 	struct sockaddr_in sin_r;
 
 	sin_r.sin_family = AF_INET;
@@ -318,9 +376,7 @@ int main(int argc, char **argv)
     }
 
 	printf("start sending...\n");
-//	ssock = rsock;
 	spoof_open(src_ip, des_ip, des_port);
-//	sleep(1);
 
 	memset(buf, 0, sizeof(buf));
 	printf("start recv...\n");
@@ -350,9 +406,9 @@ int main(int argc, char **argv)
 		printf("%02x ", buf[i] & 0xff);
 	}
 	printf("%s\n", buf);
-	spoof_ack(src_ip, des_ip, des_port);
-/*
-    if((msg_len = recv(rsock, buf, 0x3b - 0x0e, 0)) == -1)
+
+	spoof_data(src_ip, des_ip, des_port);
+	if((msg_len = recv(rsock, buf, 0x3b - 0x0e, 0)) == -1)
     {
         perror("recv: ");
         exit(-1);
@@ -362,34 +418,15 @@ int main(int argc, char **argv)
         tmp[i] = buf[0x1c - 0x4 + i];
     }
     tmp[3] ++;
-    ack_num = (int *)tmp;
-    printf("len = %ld\n", msg_len);
-    for (i = 0; i < 128; i++)
+	if((msg_len = recv(rsock, buf, 0x3b - 0x0e, 0)) == -1)
     {
-        if (i % 8 == 0)
-        {
-            printf(" ");
-        }
-        if (i % 0x10 == 0)
-        {
-            printf(" \n");
-        }
-        printf("%02x ", buf[i] & 0xff);
+        perror("recv: ");
+        exit(-1);
     }
-    printf("%s\n", buf);
-*/
 
-	 spoof_data(src_ip, des_ip, des_port);
-
-/*
-	printf("flooding. each dot equals 25 packets.\n");
-
-    srcport = src_port;
-    spoof_open(src_ip, des_ip, des_port);
-    sleep(1);
-    printf(".");
-
-    printf("\nFlood completed.\n");
-*/
+	spoof_nack(src_ip, des_ip, des_port);
+	close(ssock);
+	close(rsock);
+	system("iptables -D OUTPUT 1");
     return 0;
 }
